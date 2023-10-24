@@ -1,0 +1,236 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: Email channel for Amazon Connect.
+
+Globals:
+  Function:
+    Timeout: 60
+    MemorySize: 256
+    Runtime: python3.10
+
+Resources:
+  LambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          -
+            Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns: 
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        -
+          PolicyName: ConnectAccess
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              -
+                Effect: Allow
+                Action:
+                  - connect:UpdateContactAttributes
+                  - connect:GetContactAttributes
+                  - connect:StartChatContact
+                  - connect:StartContactStreaming
+                  - connect:UpdateContact
+                Resource: 
+                  - '*'
+        -
+          PolicyName: EncryptionAccess
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              -
+                Effect: Allow
+                Action:
+                  - kms:GenerateDataKey*
+                  - kms:Decrypt
+                Resource: 
+                  - '*'
+        -
+          PolicyName: EmailSending
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              -
+                Effect: Allow
+                Action:
+                  - ses:SendEmail
+                  - ses:SendRawEmail
+                Resource: 
+                  - '*'
+        -
+          PolicyName: BucketAccess
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              -
+                Effect: Allow
+                Action:
+                  - 's3:PutObject'
+                  - 's3:GetObject'
+                  - 's3:DeleteObject'
+                  - 's3:ListBucket'
+                Resource:
+                  - '*'
+        -
+          PolicyName: TopicAccess
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              -
+                Effect: Allow
+                Action:
+                  - sns:Publish
+                  - sns:Subscribe
+                Resource:
+                  - !Ref messageExchange
+                  
+  encryptionkey:
+    Type: AWS::KMS::Key
+    Properties: 
+      Description: Amazon Connect Email Access Key
+      Enabled: True
+      EnableKeyRotation: True
+      KeySpec: SYMMETRIC_DEFAULT
+      KeyPolicy:
+        Version: 2012-10-17
+        Statement:
+          - Sid: "Enable IAM User Permissions"
+            Effect: "Allow"
+            Principal: 
+              AWS:
+                Fn::Join: 
+                - ""
+                - 
+                  - "arn:aws:iam::"
+                  - Ref: "AWS::AccountId"
+                  - ":root"
+            Action: 'kms:*'
+            Resource: '*'
+          - Sid: "Enable Services Access"
+            Effect: "Allow"
+            Principal: 
+              Service:
+                - 'connect.amazonaws.com'
+                - 'ses.amazonaws.com'
+            Action:
+              - 'kms:GenerateDataKey*'
+              - 'kms:Decrypt'
+            Resource: '*'
+            
+  messageExchange:
+    Type: AWS::SNS::Topic
+    Properties:
+      DisplayName: 'EmailDistribution'
+      KmsMasterKeyId: !Ref encryptionkey
+
+  ConnectEmailChatDeps:
+    Type: AWS::Serverless::LayerVersion
+    Properties:
+      ContentUri: Connect-Email-Layer/
+      CompatibleRuntimes:
+        - python3.11
+        - python3.10
+        - python3.9
+        - python3.8
+    Metadata:
+      BuildMethod: python3.8
+
+  Attach:
+    Type: AWS::Serverless::Function 
+    Properties:
+      Role: !GetAtt LambdaRole.Arn
+      CodeUri: Connect-Email-Attach/
+      Handler: lambda_function.lambda_handler
+      Environment: 
+        Variables:
+          INSTANCE_ID: 'REPLACE WITH CONNECT INSTANCE ID'
+      Events:
+        incomingmessageSNS:
+          Type: SNS
+          Properties:
+            Topic: !Ref messageExchange
+  
+  Receive:
+    Type: AWS::Serverless::Function 
+    Properties:
+      Role: !GetAtt LambdaRole.Arn
+      CodeUri: Connect-Email-Chat/
+      Handler: lambda_function.lambda_handler
+      Environment: 
+        Variables:
+          SNS_TOPIC: !Ref messageExchange
+          CONTACT_FLOW_ID: 'REPLACE WITH CONNECT EMAIL FLOW'
+          INSTANCE_ID: 'REPLACE WITH CONNECT INSTANCE ID'
+      Layers:
+      - !Ref ConnectEmailChatDeps
+      Events:
+        LoadFileEvent:
+          Type: S3
+          Properties:
+            Bucket: !Ref emailBucket
+            Events: s3:ObjectCreated:*
+
+  Reply:
+    Type: AWS::Serverless::Function
+    Properties:
+      Role: !GetAtt LambdaRole.Arn
+      CodeUri: Connect-Email-Reply/
+      Handler: lambda_function.lambda_handler
+      Environment:
+        Variables:
+          SOURCE_EMAIL: 'REPLACE WITH SOURCE EMAIL'
+          CONNECT_ATTACHMENTS_LOCATION: 'REPLACE WITH THE CONNECT ATTACHMENT PREFIX LOCATION'
+          BUCKET: 'REPLACE WITH CONNECT BUCKET NAME'
+
+  emailBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Join ['-', ['emailbucket', !Select [4, !Split ['-', !Select [2, !Split ['/', !Ref AWS::StackId]]]]]]
+    DeletionPolicy: Delete
+
+  emailBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties: 
+      Bucket: !Ref emailBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: 'AllowSESPuts'
+            Action: 's3:PutObject'
+            Effect: Allow
+            Resource: !Join
+              - ''
+              - - 'arn:aws:s3:::'
+                - !Ref emailBucket
+                - /*
+            Principal:
+              Service: 'ses.amazonaws.com'
+            Condition:
+              StringEquals:
+                'AWS:SourceAccount': 
+                  !Ref AWS::AccountId
+                    
+  
+  ConnectRuleSet:
+    Type: AWS::SES::ReceiptRuleSet
+    Properties: 
+      RuleSetName: !Join ['-', ['email-connect', !Select [4, !Split ['-', !Select [2, !Split ['/', !Ref AWS::StackId]]]]]]
+    
+  S3Rule:
+    Type: AWS::SES::ReceiptRule
+    DependsOn: emailBucketPolicy
+    Properties:
+        RuleSetName: !Ref ConnectRuleSet
+        Rule:
+          Actions: 
+            - S3Action:
+                BucketName: !Ref emailBucket
+          Enabled: True
+          Name: !Join ['-', ['s3storage', !Select [4, !Split ['-', !Select [2, !Split ['/', !Ref AWS::StackId]]]]]]
+          ScanEnabled: True
