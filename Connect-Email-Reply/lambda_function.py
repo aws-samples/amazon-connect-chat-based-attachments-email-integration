@@ -18,7 +18,11 @@ connect_client = boto3.client('connect')
 
 def lambda_handler(event, context):
     print(event)
-    contactId = event['Details']['ContactData']['RelatedContactId']
+    ## Select ContactId based on Visual Guide or ContactFlow invocation.
+    if event['Details']['ContactData']['RelatedContactId']:
+        contactId = event['Details']['ContactData']['RelatedContactId']
+    else:
+        contactId = event['Details']['ContactData']['InitialContactId']
     instanceId=event['Details']['ContactData']['InstanceARN'].split('/')[-1]
     
     attachments_list = get_attachments_list(contactId,instanceId)
