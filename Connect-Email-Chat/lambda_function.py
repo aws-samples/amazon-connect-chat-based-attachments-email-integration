@@ -50,15 +50,28 @@ def lambda_handler(event, context):
                     
                 
                 elif ctype == 'text/plain':
-                    print("Plain")
-                    body = part.get_payload(decode=True)
-                    msgBody += body.decode()
+                    try:
+                        body = part.get_payload(decode=True)
+                        msgBody += body.decode()
+                        
+                    except Exception as err:
+                        print(err)
+                        print("Attempting decoding as latin1")
+                        body = part.get_payload(decode=True).decode('latin1')
+                        msgBody += body
                     
         # not multipart 
         else:
             print("Not multipart")
-            body = msg.get_payload(decode=True)
-            msgBody = body.decode()
+            try:
+                body = part.get_payload(decode=True)
+                msgBody += body.decode()
+                
+            except Exception as err:
+                print(err)
+                print("Attempting decoding as latin1")
+                body = part.get_payload(decode=True).decode('latin1')
+                msgBody += body
             
 
         start_chat_response = start_chat(msgSubject, msgFrom, msgBody, 'email',CONTACT_FLOW_ID,INSTANCE_ID)
