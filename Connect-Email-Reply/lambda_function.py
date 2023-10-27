@@ -4,6 +4,7 @@ import boto3
 import os
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
+from email.mime.image import MIMEImage
 from email.mime.application import MIMEApplication
 from botocore.exceptions import ClientError
 
@@ -18,7 +19,6 @@ connect_client = boto3.client('connect')
 
 def lambda_handler(event, context):
     print(event)
-    ## Select ContactId based on Visual Guide or ContactFlow invocation.
     if event['Details']['ContactData']['RelatedContactId']:
         contactId = event['Details']['ContactData']['RelatedContactId']
     else:
@@ -28,49 +28,30 @@ def lambda_handler(event, context):
     attachments_list = get_attachments_list(contactId,instanceId)
     print("attachments")
     print(attachments_list)
-    destination = str(event['Details']['ContactData']['Attributes']['From'])
+    
     subject = "Re:" + str(event['Details']['ContactData']['Attributes']['Subject'])
     content = str(event['Details']['Parameters']['msgResponse']) + '\n ==== \n' + str(event['Details']['ContactData']['Attributes']['Body'])
     
+    ccAddress = str(event['Details']['ContactData']['Attributes'].get('ccAddress',''))
+    
+    destination = [str(event['Details']['ContactData']['Attributes']['From'])]
+    print(ccAddress)
+    if ccAddress:
+        destination.append(list(map(str.strip, ccAddress.split(','))))
+
+    signature = str(event['Details']['ContactData']['Attributes'].get('signature',None))
+    
     if(attachments_list):
-        send_attachments(destination,SOURCE_EMAIL,subject, content, json.loads(attachments_list))
+        send_email(destination,subject, content, json.loads(attachments_list),signature)
     else:
-        send_attachments(destination,SOURCE_EMAIL,subject, content, False)
+        send_email(destination,subject, content, False,signature)
     
     return {
         'statusCode': 200,
         'body': json.dumps('Message sent!')
     }
 
-def send_email(destination,source,subject, content):
-    ses_client = boto3.client("ses")
-    CHARSET = "UTF-8"
-    response = ses_client.send_email(
-        Destination={
-            "ToAddresses": [
-                destination,
-            ],
-        },
-        Message={
-            "Body": {
-                "Text": {
-                    "Charset": CHARSET,
-                    "Data": content,
-                }
-            },
-            "Subject": {
-                "Charset": CHARSET,
-                "Data": subject,
-            },
-        },
-        Source=source
-    )
-
-
-
 def get_attachments_list(contactId,instanceId):
-    
-    contactAttributes = {}
     
     attributes = connect_client.get_contact_attributes(
     InstanceId=instanceId,
@@ -83,21 +64,30 @@ def get_attachments_list(contactId,instanceId):
     else:
         return False
 
-def send_attachments(destination,source,subject, content, files):
+def send_email(destination,subject, content, files,signature):
 
     CHARSET = "utf-8"
     msg = MIMEMultipart('mixed')
-    msg['Subject'] = subject 
-    msg['From'] = source 
-    msg['To'] = destination
+    msg['Subject'] = subject
+    msg['From'] = SOURCE_EMAIL 
+    msg['To'] = destination[0]
+    
     msg_body = MIMEMultipart('alternative')
 
     textpart = MIMEText(content.encode(CHARSET), 'plain', CHARSET)
     msg_body.attach(textpart)
     msg.attach(msg_body)
-    ##htmlpart = MIMEText(BODY_HTML.encode(CHARSET), 'html', CHARSET)
-    ##msg_body.attach(htmlpart)
+    BODY_HTML= '<html><head></head><body><p><h1>Previo</h1>'+content+'<img src="cid:firma">'+'</p></body></html>'
+    htmlpart = MIMEText(BODY_HTML.encode(CHARSET), 'html', CHARSET)
+    msg_body.attach(htmlpart)
 
+    if(signature):
+        ## Add Signature
+        signatureFile = 'firmaSven.gif'
+        s3.download_file(BUCKET, CONNECT_ATTACHMENTS_LOCATION + '/' + signatureFile, '/tmp/' +signatureFile)
+        msgImage = MIMEImage(open('/tmp/' + signatureFile, 'rb').read())
+        msgImage.add_header('Content-ID', '<firma>') ##Add ID to image
+        msg_body.attach(msgImage)
 
 
     if (files and len(files)>0):
@@ -112,10 +102,10 @@ def send_attachments(destination,source,subject, content, files):
 
     try:
         response = ses.send_raw_email(
-            Source=source,
-            Destinations=[
+            Source=SOURCE_EMAIL,
+            Destinations=
                 destination
-            ],
+            ,
             RawMessage={
                 'Data':msg.as_string(),
             },

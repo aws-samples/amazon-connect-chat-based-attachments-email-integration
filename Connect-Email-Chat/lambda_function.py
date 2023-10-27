@@ -38,7 +38,11 @@ def lambda_handler(event, context):
             for part in msg.walk():
                 
                 ctype = part.get_content_type()
+                content_type = str(part.get('Content-Type'))
                 content_disposition = str(part.get('Content-Disposition'))
+
+                
+                
                 fileAttached = {}
                 if content_disposition and 'attachment' in content_disposition:
                     fileAttached['name'] = part.get_filename()
@@ -60,6 +64,7 @@ def lambda_handler(event, context):
                         body = part.get_payload(decode=True).decode('latin1')
                         msgBody += body
                     
+                    
         # not multipart 
         else:
             print("Not multipart")
@@ -77,10 +82,14 @@ def lambda_handler(event, context):
         start_chat_response = start_chat(msgSubject, msgFrom, msgBody, 'email',CONTACT_FLOW_ID,INSTANCE_ID)
         start_stream_response = start_stream(INSTANCE_ID, start_chat_response['ContactId'], SNS_TOPIC)
         create_connection_response = create_connection(start_chat_response['ParticipantToken'])
-        ##send_message_response = send_message(msgBody, msgFrom, create_connection_response['ConnectionCredentials']['ConnectionToken'])
+        
         if(len(files)>0):
             for file in files:
                 attachmentResponse = attach_file(file['data'],file['name'],file['size'],file['type'],create_connection_response['ConnectionCredentials']['ConnectionToken'])
+                if(not attachmentResponse):
+                    print("Attachment was not successfull")
+                    s3File = upload_data_to_s3(file['data'],bucket,  'attachments/'+ fileKey+file['name'])
+                    send_message_response = send_message(s3File, msgFrom, create_connection_response['ConnectionCredentials']['ConnectionToken'])
         
         
 def strip_address(address):

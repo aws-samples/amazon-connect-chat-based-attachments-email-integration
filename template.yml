@@ -175,6 +175,12 @@ Resources:
           Properties:
             Bucket: !Ref emailBucket
             Events: s3:ObjectCreated:*
+            Filter: 
+                S3Key: 
+                    Rules: 
+                      - Name: prefix
+                        Value: "incoming"
+                        
 
   Reply:
     Type: AWS::Serverless::Function
@@ -231,6 +237,7 @@ Resources:
           Actions: 
             - S3Action:
                 BucketName: !Ref emailBucket
+                ObjectKeyPrefix: 'incoming'
           Enabled: True
           Name: !Join ['-', ['s3storage', !Select [4, !Split ['-', !Select [2, !Split ['/', !Ref AWS::StackId]]]]]]
           ScanEnabled: True
